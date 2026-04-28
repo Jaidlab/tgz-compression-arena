@@ -1,5 +1,6 @@
 import {BunGzip9} from './BunGzip9.ts'
 import {BunGzip9Advdef} from './BunGzip9Advdef.ts'
+import {Gigapress} from './Gigapress.ts'
 import {GzipExe} from './GzipExe.ts'
 import {SevenZipGzip} from './SevenZipGzip.ts'
 import {Zenzop} from './Zenzop.ts'
@@ -14,6 +15,7 @@ export const candidates = [
   new Zenzop,
   new ZenzopEnhanced,
   new ZenzopEnhancedAdvdef,
+  new Gigapress,
 ]
 
 export type {CompressionCandidate} from './base/CompressionCandidate.ts'
