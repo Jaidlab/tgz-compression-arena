@@ -19,6 +19,7 @@ type CostModel = {
 type EncodedBlock = {
   bitLength: number
   bytes: Uint8Array
+  tokens: Array<GigapressToken>
 }
 
 type ParsedBlock = {
@@ -492,30 +493,133 @@ const buildParsedBlock = (tokens: Array<GigapressToken>): ParsedBlock => {
   }
   return candidates.toSorted((a, b) => getParsedBlockBitLength(a, true) - getParsedBlockBitLength(b, true))[0]
 }
-const encodeDeflateBlock = (tokens: Array<GigapressToken>, final: boolean): EncodedBlock => {
+const writeDeflateBlock = (writer: BitWriter, tokens: Array<GigapressToken>, final: boolean) => {
   const parsed = buildParsedBlock(tokens)
-  const writer = new BitWriter
   writer.writeBits(final ? 1 : 0, 1)
   writer.writeBits(2, 2)
   writeDynamicHeader(writer, parsed)
   writeTokens(writer, parsed)
+}
+const encodeDeflateBlock = (tokens: Array<GigapressToken>, final: boolean): EncodedBlock => {
+  const writer = new BitWriter
+  writeDeflateBlock(writer, tokens, final)
   const bitLength = writer.bitLength
   return {
     bitLength,
     bytes: writer.finish(),
+    tokens,
   }
 }
-const parseOptimally = (data: Uint8Array, matches: Array<PositionMatches>, model: CostModel) => {
-  const costs = new Float64Array(data.length + 1)
-  const bestLength = new Uint16Array(data.length)
-  const bestDistance = new Uint16Array(data.length)
+const encodeDeflateBlocks = (tokenBlocks: Array<Array<GigapressToken>>): EncodedBlock => {
+  const writer = new BitWriter
+  for (const [index, tokens] of tokenBlocks.entries()) {
+    writeDeflateBlock(writer, tokens, index === tokenBlocks.length - 1)
+  }
+  const bitLength = writer.bitLength
+  return {
+    bitLength,
+    bytes: writer.finish(),
+    tokens: tokenBlocks.flat(),
+  }
+}
+const getTokenByteLength = (token: GigapressToken) => {
+  return token.type === 'literal' ? 1 : token.length
+}
+const getTokenBoundaryPositions = (tokens: Array<GigapressToken>) => {
+  const positions = [0]
+  let position = 0
+  for (const token of tokens) {
+    position += getTokenByteLength(token)
+    positions.push(position)
+  }
+  return positions
+}
+const findSplitPoints = (tokens: Array<GigapressToken>, maxBlocks = 4) => {
+  const positions = getTokenBoundaryPositions(tokens)
+  const tokenCount = tokens.length
+  const costCache = new Map<string, number>
+  const getCost = (start: number, end: number) => {
+    const key = `${start}:${end}`
+    const cached = costCache.get(key)
+    if (cached !== undefined) {
+      return cached
+    }
+    const cost = getParsedBlockBitLength(buildParsedBlock(tokens.slice(start, end)), false)
+    costCache.set(key, cost)
+    return cost
+  }
+  const addNearestCandidate = (candidates: Set<number>, target: number, tokenIndex: number) => {
+    while (tokenIndex + 1 < positions.length && positions[tokenIndex + 1] < target) {
+      tokenIndex++
+    }
+    const left = tokenIndex
+    const right = Math.min(tokenIndex + 1, tokenCount)
+    candidates.add(Math.abs(positions[left] - target) <= Math.abs(positions[right] - target) ? left : right)
+    return tokenIndex
+  }
+  const getCandidates = (start: number, end: number, step: number, center?: number) => {
+    const candidates = new Set<number>
+    const byteStart = positions[start]
+    const byteEnd = positions[end]
+    const searchStart = center === undefined ? byteStart + 256 : Math.max(byteStart + 256, center - 512)
+    const searchEnd = center === undefined ? byteEnd - 256 : Math.min(byteEnd - 256, center + 512)
+    let tokenIndex = start
+    for (let target = Math.ceil(searchStart / step) * step; target < searchEnd; target += step) {
+      tokenIndex = addNearestCandidate(candidates, target, tokenIndex)
+    }
+    return candidates
+  }
+  const getBestSplit = (start: number, end: number, candidates: Set<number>) => {
+    const wholeCost = getCost(start, end)
+    let bestSplit = -1
+    let bestCost = wholeCost
+    for (const split of candidates) {
+      if (split <= start || split >= end) {
+        continue
+      }
+      const cost = getCost(start, split) + getCost(split, end)
+      if (cost < bestCost) {
+        bestCost = cost
+        bestSplit = split
+      }
+    }
+    return {
+      bestCost,
+      bestSplit,
+      wholeCost,
+    }
+  }
+  const splitRanges = (start: number, end: number, blockBudget: number): Array<number> => {
+    if (blockBudget <= 1 || end - start < 16) {
+      return []
+    }
+    const coarse = getBestSplit(start, end, getCandidates(start, end, 256))
+    const refined = coarse.bestSplit === -1 ? coarse : getBestSplit(start, end, getCandidates(start, end, 16, positions[coarse.bestSplit]))
+    const {bestCost, bestSplit, wholeCost} = refined.bestSplit === -1 || coarse.bestCost < refined.bestCost ? coarse : refined
+    if (bestSplit === -1) {
+      return []
+    }
+    const leftWholeCost = getCost(start, bestSplit)
+    const rightWholeCost = getCost(bestSplit, end)
+    if (leftWholeCost > rightWholeCost) {
+      return [...splitRanges(start, bestSplit, blockBudget - 1), bestSplit]
+    }
+    return [bestSplit, ...splitRanges(bestSplit, end, blockBudget - 1)]
+  }
+  return splitRanges(0, tokenCount, maxBlocks).toSorted((a, b) => a - b).map(index => positions[index])
+}
+const parseOptimally = (data: Uint8Array, matches: Array<PositionMatches>, model: CostModel, start = 0, end = data.length) => {
+  const costs = new Float64Array(end + 1)
+  const bestLength = new Uint16Array(end)
+  const bestDistance = new Uint16Array(end)
   costs.fill(Number.POSITIVE_INFINITY)
-  costs[data.length] = 0
-  for (let position = data.length - 1; position >= 0; position--) {
+  costs[end] = 0
+  for (let position = end - 1; position >= start; position--) {
     let bestCost = model.literalLength[data[position]] + costs[position + 1]
     bestLength[position] = 1
     const positionMatches = matches[position]
-    for (let length = minMatchLength; length <= positionMatches.maxLength; length++) {
+    const maxLength = Math.min(positionMatches.maxLength, end - position)
+    for (let length = minMatchLength; length <= maxLength; length++) {
       const distance = positionMatches.distances[length]
       if (distance === 0) {
         continue
@@ -532,7 +636,7 @@ const parseOptimally = (data: Uint8Array, matches: Array<PositionMatches>, model
     costs[position] = bestCost
   }
   const tokens: Array<GigapressToken> = []
-  for (let position = 0; position < data.length;) {
+  for (let position = start; position < end;) {
     const length = bestLength[position]
     if (length > 1) {
       tokens.push({
@@ -566,6 +670,46 @@ const chooseBest = (current: EncodedBlock | undefined, candidate: EncodedBlock) 
   }
   return current
 }
+const optimizeTokenRange = (data: Uint8Array, matches: Array<PositionMatches>, iterations: number, start = 0, end = data.length) => {
+  const greedyTokens = getGreedyTokens(data, matches, start, end)
+  let best = encodeDeflateBlock(greedyTokens, true)
+  const fixedTokens = parseOptimally(data, matches, getInitialCostModel(), start, end)
+  best = chooseBest(best, encodeDeflateBlock(fixedTokens, true))
+  let frequencies = getFrequencies(greedyTokens)
+  let bestFrequencies = cloneSymbolFrequencies(frequencies)
+  let bestBitLength = best.bitLength
+  let lastBitLength = Number.POSITIVE_INFINITY
+  let randomized = false
+  let stableIterations = 0
+  for (let iteration = 0; iteration < iterations; iteration++) {
+    const parseModel = getCostModelFromSymbolFrequencies(frequencies)
+    const tokens = parseOptimally(data, matches, parseModel, start, end)
+    const encoded = encodeDeflateBlock(tokens, true)
+    const previousBestLength = best.bytes.length
+    best = chooseBest(best, encoded)
+    const tokenFrequencies = getFrequencies(tokens)
+    if (encoded.bitLength < bestBitLength || encoded.bytes.length < previousBestLength) {
+      stableIterations = 0
+      bestFrequencies = cloneSymbolFrequencies(tokenFrequencies)
+      bestBitLength = Math.min(bestBitLength, encoded.bitLength)
+    } else {
+      stableIterations++
+    }
+    if (iteration > 5 && encoded.bitLength === lastBitLength) {
+      frequencies = randomizeFrequencies(bestFrequencies, Math.imul(data.length + start + end + iteration, 0x9E_37_79_B9))
+      randomized = true
+    } else if (randomized) {
+      frequencies = addWeightedFrequencies(tokenFrequencies, 1, frequencies, 0.5)
+    } else {
+      frequencies = tokenFrequencies
+    }
+    lastBitLength = encoded.bitLength
+    if (stableIterations >= 96 && iteration >= 128) {
+      break
+    }
+  }
+  return best.tokens
+}
 
 export class Gigapress {
   readonly iterations: number
@@ -576,42 +720,14 @@ export class Gigapress {
 
   compress(data: Uint8Array) {
     const matches = findMatches(data)
-    const greedyTokens = getGreedyTokens(data, matches)
-    let best = encodeDeflateBlock(greedyTokens, true)
-    const fixedTokens = parseOptimally(data, matches, getInitialCostModel())
-    best = chooseBest(best, encodeDeflateBlock(fixedTokens, true))
-    let frequencies = getFrequencies(greedyTokens)
-    let bestFrequencies = cloneSymbolFrequencies(frequencies)
-    let bestBitLength = best.bitLength
-    let lastBitLength = Number.POSITIVE_INFINITY
-    let randomized = false
-    let stableIterations = 0
-    for (let iteration = 0; iteration < this.iterations; iteration++) {
-      const parseModel = getCostModelFromSymbolFrequencies(frequencies)
-      const tokens = parseOptimally(data, matches, parseModel)
-      const encoded = encodeDeflateBlock(tokens, true)
-      const previousBestLength = best.bytes.length
-      best = chooseBest(best, encoded)
-      const tokenFrequencies = getFrequencies(tokens)
-      if (encoded.bitLength < bestBitLength || encoded.bytes.length < previousBestLength) {
-        stableIterations = 0
-        bestFrequencies = cloneSymbolFrequencies(tokenFrequencies)
-        bestBitLength = Math.min(bestBitLength, encoded.bitLength)
-      } else {
-        stableIterations++
-      }
-      if (iteration > 5 && encoded.bitLength === lastBitLength) {
-        frequencies = randomizeFrequencies(bestFrequencies, Math.imul(data.length + iteration, 0x9E_37_79_B9))
-        randomized = true
-      } else if (randomized) {
-        frequencies = addWeightedFrequencies(tokenFrequencies, 1, frequencies, 0.5)
-      } else {
-        frequencies = tokenFrequencies
-      }
-      lastBitLength = encoded.bitLength
-      if (stableIterations >= 96 && iteration >= 128) {
-        break
-      }
+    const tokens = optimizeTokenRange(data, matches, this.iterations)
+    let best = encodeDeflateBlock(tokens, true)
+    const splitPoints = findSplitPoints(tokens)
+    if (splitPoints.length > 0) {
+      const rangeStarts = [0, ...splitPoints]
+      const rangeEnds = [...splitPoints, data.length]
+      const blockTokens = rangeStarts.map((start, index) => optimizeTokenRange(data, matches, this.iterations, start, rangeEnds[index]))
+      best = chooseBest(best, encodeDeflateBlocks(blockTokens))
     }
     return makeGzip(data, best.bytes)
   }

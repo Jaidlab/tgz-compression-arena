@@ -73,12 +73,13 @@ export const findMatches = (data: Uint8Array) => {
   return result
 }
 
-export const getGreedyTokens = (data: Uint8Array, matches: Array<PositionMatches>) => {
+export const getGreedyTokens = (data: Uint8Array, matches: Array<PositionMatches>, start = 0, end = data.length) => {
   const tokens: Array<GigapressToken> = []
-  for (let position = 0; position < data.length;) {
+  for (let position = start; position < end;) {
     const positionMatches = matches[position]
-    if (positionMatches.maxLength >= minMatchLength) {
-      const length = positionMatches.maxLength
+    const maxLength = Math.min(positionMatches.maxLength, end - position)
+    if (maxLength >= minMatchLength) {
+      const length = maxLength
       tokens.push({
         distance: positionMatches.distances[length],
         length,
