@@ -40,6 +40,7 @@ type RleCodeLengthToken = {
 
 const defaultIterations = 1000
 const endOfBlockSymbol = 256
+const frequencyRandomizationSeedOffset = 373
 const maxDistanceSymbol = 29
 const maxLiteralLengthSymbol = 285
 const minMatchLength = 3
@@ -696,7 +697,7 @@ const optimizeTokenRange = (data: Uint8Array, matches: Array<PositionMatches>, i
       stableIterations++
     }
     if (iteration > 5 && encoded.bitLength === lastBitLength) {
-      frequencies = randomizeFrequencies(bestFrequencies, Math.imul(data.length + start + end + iteration, 0x9E_37_79_B9))
+      frequencies = randomizeFrequencies(bestFrequencies, Math.imul(data.length + start + end + iteration + frequencyRandomizationSeedOffset, 0x9E_37_79_B9))
       randomized = true
     } else if (randomized) {
       frequencies = addWeightedFrequencies(tokenFrequencies, 1, frequencies, 0.5)
