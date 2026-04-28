@@ -30,7 +30,7 @@ export abstract class CompressionCandidate {
         ...context,
         steps,
       })
-      return await this.makeOkResult(output, steps)
+      return await this.makeOkResult(input, output, steps)
     } catch (error) {
       if (error instanceof CommandFailedError) {
         steps.push(error.step)
@@ -49,12 +49,13 @@ export abstract class CompressionCandidate {
     } satisfies CandidateResultError
   }
 
-  private async makeOkResult(output: string, steps: Array<MeasuredStep>) {
+  private async makeOkResult(input: string, output: string, steps: Array<MeasuredStep>) {
+    await this.validateOutput(input, output)
     return {
       id: this.id,
       label: this.label,
       output: toRelativePortablePath(output),
-      peakRamBytes: Math.max(...steps.map(step => step.peakRamBytes)),
+      peakRamBytes: Math.max(...steps.map(step => step.peakRamBytes), 0),
       runtimeMs: Number(steps.reduce((sum, step) => sum + step.runtimeMs, 0).toFixed(3)),
       size: await getFileSize(output),
       status: 'ok',
@@ -69,5 +70,16 @@ export abstract class CompressionCandidate {
       reason,
       status: 'skipped',
     } satisfies CandidateResultSkipped
+  }
+
+  private async validateOutput(input: string, output: string) {
+    const [compressed, expected] = await Promise.all([
+      Bun.file(output).arrayBuffer(),
+      Bun.file(input).arrayBuffer(),
+    ])
+    const actual = Bun.gunzipSync(compressed)
+    if (actual.byteLength !== expected.byteLength || Buffer.compare(Buffer.from(actual), Buffer.from(expected)) !== 0) {
+      throw new Error(`Output ${toRelativePortablePath(output)} does not decompress back to ${toRelativePortablePath(input)}`)
+    }
   }
 }

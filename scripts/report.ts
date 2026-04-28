@@ -6,6 +6,7 @@ import fs from 'fs-extra'
 import YAML from 'yaml'
 
 type RunResult = {
+  candidates?: Array<CandidateEntry>
   fixtures: Array<{
     bestCandidateId?: string
     candidates: Array<CandidateResult>
@@ -14,6 +15,11 @@ type RunResult = {
     name: string
   }>
   generatedAt: string
+}
+
+type CandidateEntry = {
+  id: string
+  label: string
 }
 
 const resultsFile = 'out/results.yml'
@@ -59,6 +65,70 @@ const getSortedCandidates = (candidates: Array<CandidateResult>) => candidates.t
 const makeBar = (value: number, max: number) => {
   const width = max > 0 ? Math.max(2, value / max * 100) : 0
   return `<span class="bar" style="--bar-width: ${width.toFixed(2)}%"></span>`
+}
+const getCandidateEntries = (result: RunResult) => {
+  if (result.candidates) {
+    return result.candidates
+  }
+  const candidatesById = new Map<string, CandidateEntry>
+  for (const fixture of result.fixtures) {
+    for (const candidate of fixture.candidates) {
+      candidatesById.set(candidate.id, {
+        id: candidate.id,
+        label: candidate.label,
+      })
+    }
+  }
+  return [...candidatesById.values()]
+}
+const renderOverview = (result: RunResult) => {
+  const fixtureCount = result.fixtures.length
+  const inputSize = result.fixtures.reduce((sum, fixture) => sum + fixture.inputSize, 0)
+  const summaries = getCandidateEntries(result).map(candidate => {
+    const okResults = result.fixtures
+      .map(fixture => fixture.candidates.find(resultCandidate => resultCandidate.id === candidate.id))
+      .filter((candidateResult): candidateResult is CandidateResultOk => candidateResult?.status === 'ok')
+    return {
+      ...candidate,
+      maxPeakRamBytes: Math.max(...okResults.map(okResult => okResult.peakRamBytes), 0),
+      okCount: okResults.length,
+      runtimeMs: okResults.reduce((sum, okResult) => sum + okResult.runtimeMs, 0),
+      size: okResults.reduce((sum, okResult) => sum + okResult.size, 0),
+      wins: result.fixtures.filter(fixture => fixture.bestCandidateId === candidate.id).length,
+    }
+  }).toSorted((a, b) => {
+    const okDelta = Number(b.okCount === fixtureCount) - Number(a.okCount === fixtureCount)
+    if (okDelta !== 0) {
+      return okDelta
+    }
+    if (a.okCount !== b.okCount) {
+      return b.okCount - a.okCount
+    }
+    if (a.size !== b.size) {
+      return a.size - b.size
+    }
+    return a.label.localeCompare(b.label)
+  })
+  return `<section class="fixture overview">
+    <header>
+      <div>
+        <h2>Overview</h2>
+        <p>${fixtureCount} fixture${fixtureCount === 1 ? '' : 's'} · source tar total ${formatBytes(inputSize)}</p>
+      </div>
+    </header>
+    <table>
+      <thead><tr><th>Compressor</th><th>Fixtures</th><th>Total size</th><th>Ratio</th><th>Total runtime</th><th>Peak RAM</th><th>Wins</th></tr></thead>
+      <tbody>${summaries.map(candidate => `<tr class="${candidate.okCount === fixtureCount ? '' : 'muted'}">
+        <td><div class="name">${escapeHtml(candidate.label)}</div><div class="path">${escapeHtml(candidate.id)}</div></td>
+        <td>${candidate.okCount}/${fixtureCount}</td>
+        <td>${candidate.okCount > 0 ? formatBytes(candidate.size) : '–'}</td>
+        <td>${candidate.okCount === fixtureCount ? `${formatNumber(candidate.size / inputSize * 100, 2)}%` : '–'}</td>
+        <td>${candidate.okCount > 0 ? formatRuntime(candidate.runtimeMs) : '–'}</td>
+        <td>${candidate.okCount > 0 ? formatBytes(candidate.maxPeakRamBytes) : '–'}</td>
+        <td>${candidate.wins}</td>
+      </tr>`).join('')}</tbody>
+    </table>
+  </section>`
 }
 const renderCandidateRow = (candidate: CandidateResult, bestCandidateId: string | undefined, maxSize: number, maxRuntime: number, maxPeakRam: number) => {
   if (candidate.status !== 'ok') {
@@ -112,6 +182,7 @@ const renderReport = (result: RunResult) => `<!doctype html>
     .intro { display: flex; justify-content: space-between; gap: 24px; align-items: end; margin-bottom: 28px; }
     .intro p, .fixture header p, .path { color: #9aa4b2; }
     .fixture { background: #191c24; border: 1px solid #2b3040; border-radius: 18px; margin-top: 18px; overflow: hidden; box-shadow: 0 20px 60px #0006; }
+    .overview { background: #171b29; }
     .fixture header { display: flex; justify-content: space-between; gap: 24px; padding: 22px 24px; border-bottom: 1px solid #2b3040; }
     .summary { text-align: right; }
     .summary strong { display: block; font-size: 24px; }
@@ -140,6 +211,7 @@ const renderReport = (result: RunResult) => `<!doctype html>
       </div>
       <p>${escapeHtml(new Date(result.generatedAt).toLocaleString('en-DE'))}</p>
     </div>
+    ${renderOverview(result)}
     ${result.fixtures.map(renderFixture).join('')}
   </main>
 </body>

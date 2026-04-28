@@ -1,1 +1,1 @@
-export {Gigapress, type GigapressOptions} from './Gigapress.ts'
+export {Gigapress, type GigapressOptions, type GigapressThorough} from './Gigapress.ts'

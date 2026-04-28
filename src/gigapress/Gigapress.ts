@@ -9,7 +9,12 @@ import {codeLengthCodeOrder, distanceCodeTable, lengthCodeTable} from './tables.
 
 export type GigapressOptions = {
   iterations?: number
+  largeBlockSize?: number
+  largeIterations?: number
+  thorough?: GigapressThorough
 }
+
+export type GigapressThorough = 'auto' | boolean
 
 type CostModel = {
   distance: Float64Array
@@ -39,11 +44,23 @@ type RleCodeLengthToken = {
 }
 
 const defaultIterations = 1000
+const defaultLargeBlockSize = 4_194_304
+const defaultLargeIterations = 8
 const endOfBlockSymbol = 256
 const frequencyRandomizationSeedOffset = 373
+const largeInputThreshold = 262_144
 const maxDistanceSymbol = 29
 const maxLiteralLengthSymbol = 285
 const minMatchLength = 3
+const toPositiveInteger = (value: number | undefined, fallback: number, minimum = 1) => {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback
+  }
+  return Math.max(minimum, Math.floor(value))
+}
+const isThorough = (thorough: GigapressThorough, size: number) => {
+  return thorough === 'auto' ? size <= largeInputThreshold : thorough
+}
 const fixedLiteralLengthCosts = new Float64Array(286)
 for (let symbol = 0; symbol <= 143; symbol++) {
   fixedLiteralLengthCosts[symbol] = 8
@@ -714,16 +731,32 @@ const optimizeTokenRange = (data: Uint8Array, matches: Array<PositionMatches>, i
 
 export class Gigapress {
   readonly iterations: number
+  readonly largeBlockSize: number
+  readonly largeIterations: number
+  readonly thorough: GigapressThorough
 
   constructor(options: GigapressOptions = {}) {
-    this.iterations = Math.max(1, Math.floor(options.iterations ?? defaultIterations))
+    this.iterations = toPositiveInteger(options.iterations, defaultIterations)
+    this.largeBlockSize = toPositiveInteger(options.largeBlockSize, defaultLargeBlockSize, 1024)
+    this.largeIterations = toPositiveInteger(options.largeIterations, Math.min(this.iterations, defaultLargeIterations))
+    this.thorough = options.thorough ?? 'auto'
   }
 
   compress(data: Uint8Array) {
+    const thorough = isThorough(this.thorough, data.length)
+    if (!thorough && data.length > largeInputThreshold) {
+      const tokenBlocks: Array<Array<GigapressToken>> = []
+      for (let start = 0; start < data.length; start += this.largeBlockSize) {
+        const block = data.subarray(start, Math.min(start + this.largeBlockSize, data.length))
+        const matches = findMatches(block)
+        tokenBlocks.push(optimizeTokenRange(block, matches, this.largeIterations))
+      }
+      return makeGzip(data, encodeDeflateBlocks(tokenBlocks).bytes)
+    }
     const matches = findMatches(data)
     const tokens = optimizeTokenRange(data, matches, this.iterations)
     let best = encodeDeflateBlock(tokens, true)
-    const splitPoints = findSplitPoints(tokens)
+    const splitPoints = thorough ? findSplitPoints(tokens) : []
     if (splitPoints.length > 0) {
       const rangeStarts = [0, ...splitPoints]
       const rangeEnds = [...splitPoints, data.length]
