@@ -44,11 +44,12 @@ type RleCodeLengthToken = {
 }
 
 const defaultIterations = 1000
-const defaultLargeBlockSize = 4_194_304
-const defaultLargeIterations = 8
+const defaultLargeBlockSize = 16_777_216
+const defaultLargeIterations = 150
 const endOfBlockSymbol = 256
 const frequencyRandomizationSeedOffset = 373
 const largeInputThreshold = 262_144
+const splitHeaderOverheadBits = 280
 const maxDistanceSymbol = 29
 const maxLiteralLengthSymbol = 285
 const minMatchLength = 3
@@ -552,7 +553,54 @@ const getTokenBoundaryPositions = (tokens: Array<GigapressToken>) => {
   }
   return positions
 }
-const findSplitPoints = (tokens: Array<GigapressToken>, maxBlocks = 4) => {
+type TokenSymbolStream = {
+  distanceSymbols: Int8Array
+  extraBits: Uint8Array
+  literalLengthSymbols: Uint16Array
+}
+
+const precomputeTokenSymbols = (tokens: Array<GigapressToken>): TokenSymbolStream => {
+  const literalLengthSymbols = new Uint16Array(tokens.length)
+  const distanceSymbols = new Int8Array(tokens.length)
+  const extraBits = new Uint8Array(tokens.length)
+  for (const [index, token] of tokens.entries()) {
+    if (token.type === 'literal') {
+      literalLengthSymbols[index] = token.literal
+      distanceSymbols[index] = -1
+      extraBits[index] = 0
+      continue
+    }
+    literalLengthSymbols[index] = lengthCodeTable.symbols[token.length]
+    distanceSymbols[index] = distanceCodeTable.symbols[token.distance]
+    extraBits[index] = lengthCodeTable.extraBits[token.length] + distanceCodeTable.extraBits[token.distance]
+  }
+  return {
+    distanceSymbols,
+    extraBits,
+    literalLengthSymbols,
+  }
+}
+const entropyCost = (frequencies: Uint32Array, total: number) => {
+  if (total <= 0) {
+    return 0
+  }
+  const log2Total = Math.log2(total)
+  let cost = 0
+  for (const frequency of frequencies) {
+    if (frequency > 0) {
+      cost += frequency * (log2Total - Math.log2(frequency))
+    }
+  }
+  return cost
+}
+const blockEntropyCost = (literalLength: Uint32Array, distance: Uint32Array, literalLengthTotal: number, distanceTotal: number, extraBitsTotal: number) => {
+  // Account for the mandatory end-of-block symbol that every block emits exactly once.
+  literalLength[endOfBlockSymbol]++
+  const cost = entropyCost(literalLength, literalLengthTotal + 1) + entropyCost(distance, Math.max(distanceTotal, 1)) + extraBitsTotal + splitHeaderOverheadBits
+  literalLength[endOfBlockSymbol]--
+  return cost
+}
+const findSplitPointsPrecise = (tokens: Array<GigapressToken>, maxBlocks = 4) => {
   const positions = getTokenBoundaryPositions(tokens)
   const tokenCount = tokens.length
   const costCache = new Map<string, number>
@@ -613,7 +661,7 @@ const findSplitPoints = (tokens: Array<GigapressToken>, maxBlocks = 4) => {
     }
     const coarse = getBestSplit(start, end, getCandidates(start, end, 256))
     const refined = coarse.bestSplit === -1 ? coarse : getBestSplit(start, end, getCandidates(start, end, 16, positions[coarse.bestSplit]))
-    const {bestCost, bestSplit, wholeCost} = refined.bestSplit === -1 || coarse.bestCost < refined.bestCost ? coarse : refined
+    const {bestSplit} = refined.bestSplit === -1 || coarse.bestCost < refined.bestCost ? coarse : refined
     if (bestSplit === -1) {
       return []
     }
@@ -625,6 +673,118 @@ const findSplitPoints = (tokens: Array<GigapressToken>, maxBlocks = 4) => {
     return [bestSplit, ...splitRanges(bestSplit, end, blockBudget - 1)]
   }
   return splitRanges(0, tokenCount, maxBlocks).toSorted((a, b) => a - b).map(index => positions[index])
+}
+const findSplitPoints = (tokens: Array<GigapressToken>, maxBlocks = 4) => {
+  const tokenCount = tokens.length
+  if (tokenCount < 32 || maxBlocks <= 1) {
+    return []
+  }
+  const positions = getTokenBoundaryPositions(tokens)
+  const symbolStream = precomputeTokenSymbols(tokens)
+  const {literalLengthSymbols, distanceSymbols, extraBits} = symbolStream
+  const findBestSplitInRange = (start: number, end: number) => {
+    if (end - start < 16) {
+      return {
+        gain: 0,
+        splitToken: -1,
+      }
+    }
+    const leftLiteralLength = new Uint32Array(286)
+    const leftDistance = new Uint32Array(30)
+    const rightLiteralLength = new Uint32Array(286)
+    const rightDistance = new Uint32Array(30)
+    let leftLiteralLengthTotal = 0
+    let leftDistanceTotal = 0
+    let leftExtra = 0
+    let rightLiteralLengthTotal = 0
+    let rightDistanceTotal = 0
+    let rightExtra = 0
+    for (let index = start; index < end; index++) {
+      rightLiteralLength[literalLengthSymbols[index]]++
+      rightLiteralLengthTotal++
+      const distanceSymbol = distanceSymbols[index]
+      if (distanceSymbol >= 0) {
+        rightDistance[distanceSymbol]++
+        rightDistanceTotal++
+      }
+      rightExtra += extraBits[index]
+    }
+    const wholeCost = blockEntropyCost(rightLiteralLength, rightDistance, rightLiteralLengthTotal, rightDistanceTotal, rightExtra)
+    const rangeSize = end - start
+    const stride = Math.max(1, Math.floor(rangeSize / 384))
+    const minBlockTokens = Math.max(8, Math.floor(rangeSize / 64))
+    let bestSplit = -1
+    let bestCost = wholeCost
+    for (let split = start; split < end - 1; split++) {
+      const literalLengthSymbol = literalLengthSymbols[split]
+      rightLiteralLength[literalLengthSymbol]--
+      leftLiteralLength[literalLengthSymbol]++
+      rightLiteralLengthTotal--
+      leftLiteralLengthTotal++
+      const distanceSymbol = distanceSymbols[split]
+      if (distanceSymbol >= 0) {
+        rightDistance[distanceSymbol]--
+        leftDistance[distanceSymbol]++
+        rightDistanceTotal--
+        leftDistanceTotal++
+      }
+      const tokenExtra = extraBits[split]
+      rightExtra -= tokenExtra
+      leftExtra += tokenExtra
+      const splitTokenIndex = split + 1
+      if (splitTokenIndex - start < minBlockTokens || end - splitTokenIndex < minBlockTokens) {
+        continue
+      }
+      if ((splitTokenIndex - start) % stride !== 0 && splitTokenIndex !== end - 1) {
+        continue
+      }
+      const leftCost = blockEntropyCost(leftLiteralLength, leftDistance, leftLiteralLengthTotal, leftDistanceTotal, leftExtra)
+      const rightCost = blockEntropyCost(rightLiteralLength, rightDistance, rightLiteralLengthTotal, rightDistanceTotal, rightExtra)
+      const totalCost = leftCost + rightCost
+      if (totalCost < bestCost) {
+        bestCost = totalCost
+        bestSplit = splitTokenIndex
+      }
+    }
+    return {
+      gain: wholeCost - bestCost,
+      splitToken: bestSplit,
+    }
+  }
+  type SplitRange = {
+    end: number
+    gain: number
+    splitToken: number
+    start: number
+  }
+  const evaluateRange = (start: number, end: number): SplitRange => {
+    const {gain, splitToken} = findBestSplitInRange(start, end)
+    return {
+      end,
+      gain,
+      splitToken,
+      start,
+    }
+  }
+  const queue: Array<SplitRange> = [evaluateRange(0, tokenCount)]
+  const splits: Array<number> = []
+  while (splits.length + 1 < maxBlocks) {
+    let bestIndex = -1
+    let bestGain = 0
+    for (const [index, candidate] of queue.entries()) {
+      if (candidate.splitToken !== -1 && candidate.gain > bestGain) {
+        bestGain = candidate.gain
+        bestIndex = index
+      }
+    }
+    if (bestIndex === -1) {
+      break
+    }
+    const chosen = queue.splice(bestIndex, 1)[0]
+    splits.push(chosen.splitToken)
+    queue.push(evaluateRange(chosen.start, chosen.splitToken), evaluateRange(chosen.splitToken, chosen.end))
+  }
+  return splits.toSorted((a, b) => a - b).map(index => positions[index])
 }
 const parseOptimally = (data: Uint8Array, matches: Array<PositionMatches>, model: CostModel, start = 0, end = data.length) => {
   const costs = new Float64Array(end + 1)
@@ -728,6 +888,28 @@ const optimizeTokenRange = (data: Uint8Array, matches: Array<PositionMatches>, i
   }
   return best.tokens
 }
+const splitTokensPrecisionThreshold = 524_288
+const pickSplitter = (data: Uint8Array) => {
+  return data.length <= splitTokensPrecisionThreshold ? findSplitPointsPrecise : findSplitPoints
+}
+const getMaxBlocksForData = (size: number) => {
+  if (size <= 4096) {
+    return 1
+  }
+  if (size <= 32_768) {
+    return 4
+  }
+  if (size <= 262_144) {
+    return 8
+  }
+  if (size <= 1_048_576) {
+    return 16
+  }
+  if (size <= 8_388_608) {
+    return 32
+  }
+  return 64
+}
 
 export class Gigapress {
   readonly iterations: number
@@ -739,28 +921,49 @@ export class Gigapress {
     this.iterations = toPositiveInteger(options.iterations, defaultIterations)
     this.largeBlockSize = toPositiveInteger(options.largeBlockSize, defaultLargeBlockSize, 1024)
     this.largeIterations = toPositiveInteger(options.largeIterations, Math.min(this.iterations, defaultLargeIterations))
-    this.thorough = options.thorough ?? 'auto'
+    this.thorough = options.thorough ?? true
   }
 
   compress(data: Uint8Array) {
     const thorough = isThorough(this.thorough, data.length)
     if (!thorough && data.length > largeInputThreshold) {
-      const tokenBlocks: Array<Array<GigapressToken>> = []
-      for (let start = 0; start < data.length; start += this.largeBlockSize) {
-        const block = data.subarray(start, Math.min(start + this.largeBlockSize, data.length))
-        const matches = findMatches(block)
-        tokenBlocks.push(optimizeTokenRange(block, matches, this.largeIterations))
-      }
-      return makeGzip(data, encodeDeflateBlocks(tokenBlocks).bytes)
+      return this.compressHuge(data)
     }
+    return this.compressUnified(data)
+  }
+
+  private compressHuge(data: Uint8Array) {
+    const tokenBlocks: Array<Array<GigapressToken>> = []
+    for (let start = 0; start < data.length; start += this.largeBlockSize) {
+      const block = data.subarray(start, Math.min(start + this.largeBlockSize, data.length))
+      const matches = findMatches(block)
+      const optimized = optimizeTokenRange(block, matches, this.largeIterations)
+      const splitPoints = findSplitPoints(optimized, getMaxBlocksForData(block.length))
+      if (splitPoints.length === 0) {
+        tokenBlocks.push(optimized)
+        continue
+      }
+      const rangeStarts = [0, ...splitPoints]
+      const rangeEnds = [...splitPoints, block.length]
+      for (const [index, rangeStart] of rangeStarts.entries()) {
+        tokenBlocks.push(optimizeTokenRange(block, matches, this.largeIterations, rangeStart, rangeEnds[index]))
+      }
+    }
+    return makeGzip(data, encodeDeflateBlocks(tokenBlocks).bytes)
+  }
+
+  private compressUnified(data: Uint8Array) {
     const matches = findMatches(data)
-    const tokens = optimizeTokenRange(data, matches, this.iterations)
+    const isLarge = data.length > largeInputThreshold
+    const iterations = isLarge ? this.largeIterations : this.iterations
+    const tokens = optimizeTokenRange(data, matches, iterations)
     let best = encodeDeflateBlock(tokens, true)
-    const splitPoints = thorough ? findSplitPoints(tokens) : []
+    const splitter = pickSplitter(data)
+    const splitPoints = splitter(tokens, getMaxBlocksForData(data.length))
     if (splitPoints.length > 0) {
       const rangeStarts = [0, ...splitPoints]
       const rangeEnds = [...splitPoints, data.length]
-      const blockTokens = rangeStarts.map((start, index) => optimizeTokenRange(data, matches, this.iterations, start, rangeEnds[index]))
+      const blockTokens = rangeStarts.map((start, index) => optimizeTokenRange(data, matches, iterations, start, rangeEnds[index]))
       best = chooseBest(best, encodeDeflateBlocks(blockTokens))
     }
     return makeGzip(data, best.bytes)

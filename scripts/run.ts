@@ -10,6 +10,7 @@ import {candidates} from '#src/candidates/index.ts'
 
 type RunResult = {
   candidates: Array<{
+    codec: string
     id: string
     label: string
   }>
@@ -74,6 +75,7 @@ const run = async () => {
   }
   const result: RunResult = {
     candidates: selectedCandidates.map(candidate => ({
+      codec: candidate.codec,
       id: candidate.id,
       label: candidate.label,
     })),

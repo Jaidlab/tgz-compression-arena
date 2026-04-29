@@ -1,4 +1,4 @@
-import type {CandidateAvailability, CandidateResult, CandidateResultError, CandidateResultOk, CandidateResultSkipped, CandidateRunContext, CandidateRunInternalContext, MeasuredStep} from './types.ts'
+import type {CandidateAvailability, CandidateResult, CandidateResultError, CandidateResultOk, CandidateResultSkipped, CandidateRunContext, CandidateRunInternalContext, CompressionCodec, MeasuredStep} from './types.ts'
 
 import {join} from 'node:path'
 
@@ -6,6 +6,7 @@ import {CommandFailedError} from './command.ts'
 import {getFileSize, toRelativePortablePath} from './utils.ts'
 
 export abstract class CompressionCandidate {
+  readonly codec: CompressionCodec = 'gzip'
   abstract readonly id: string
   abstract readonly label: string
 
@@ -41,6 +42,7 @@ export abstract class CompressionCandidate {
 
   private makeErrorResult(error: unknown, steps: Array<MeasuredStep>) {
     return {
+      codec: this.codec,
       error: error instanceof Error ? error.message : String(error),
       id: this.id,
       label: this.label,
@@ -52,6 +54,7 @@ export abstract class CompressionCandidate {
   private async makeOkResult(input: string, output: string, steps: Array<MeasuredStep>) {
     await this.validateOutput(input, output)
     return {
+      codec: this.codec,
       id: this.id,
       label: this.label,
       output: toRelativePortablePath(output),
@@ -65,6 +68,7 @@ export abstract class CompressionCandidate {
 
   private makeSkippedResult(reason: string) {
     return {
+      codec: this.codec,
       id: this.id,
       label: this.label,
       reason,

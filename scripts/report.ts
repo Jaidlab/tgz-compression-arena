@@ -18,6 +18,7 @@ type RunResult = {
 }
 
 type CandidateEntry = {
+  codec?: string
   id: string
   label: string
 }
@@ -49,6 +50,7 @@ const formatRuntime = (ms: number) => {
   }
   return `${formatNumber(ms / 1000, 2)} s`
 }
+const getCodec = (candidate: {codec?: string}) => candidate.codec ?? 'gzip'
 const getOkCandidates = (candidates: Array<CandidateResult>) => candidates.filter((candidate): candidate is CandidateResultOk => candidate.status === 'ok')
 const getSortedCandidates = (candidates: Array<CandidateResult>) => candidates.toSorted((a, b) => {
   if (a.status === 'ok' && b.status === 'ok') {
@@ -74,6 +76,7 @@ const getCandidateEntries = (result: RunResult) => {
   for (const fixture of result.fixtures) {
     for (const candidate of fixture.candidates) {
       candidatesById.set(candidate.id, {
+        codec: getCodec(candidate),
         id: candidate.id,
         label: candidate.label,
       })
@@ -117,9 +120,10 @@ const renderOverview = (result: RunResult) => {
       </div>
     </header>
     <table>
-      <thead><tr><th>Compressor</th><th>Fixtures</th><th>Total size</th><th>Ratio</th><th>Total runtime</th><th>Peak RAM</th><th>Wins</th></tr></thead>
+      <thead><tr><th>Compressor</th><th>Codec</th><th>Fixtures</th><th>Total size</th><th>Ratio</th><th>Total runtime</th><th>Peak RAM</th><th>Wins</th></tr></thead>
       <tbody>${summaries.map(candidate => `<tr class="${candidate.okCount === fixtureCount ? '' : 'muted'}">
         <td><div class="name">${escapeHtml(candidate.label)}</div><div class="path">${escapeHtml(candidate.id)}</div></td>
+        <td>${escapeHtml(getCodec(candidate))}</td>
         <td>${candidate.okCount}/${fixtureCount}</td>
         <td>${candidate.okCount > 0 ? formatBytes(candidate.size) : '–'}</td>
         <td>${candidate.okCount === fixtureCount ? `${formatNumber(candidate.size / inputSize * 100, 2)}%` : '–'}</td>
@@ -132,11 +136,12 @@ const renderOverview = (result: RunResult) => {
 }
 const renderCandidateRow = (candidate: CandidateResult, bestCandidateId: string | undefined, maxSize: number, maxRuntime: number, maxPeakRam: number) => {
   if (candidate.status !== 'ok') {
-    return `<tr class="muted"><td>${escapeHtml(candidate.label)}</td><td colspan="4">${candidate.status === 'skipped' ? `Skipped: ${escapeHtml(candidate.reason)}` : `Failed: ${escapeHtml(candidate.error)}`}</td></tr>`
+    return `<tr class="muted"><td>${escapeHtml(candidate.label)}</td><td>${escapeHtml(getCodec(candidate))}</td><td colspan="4">${candidate.status === 'skipped' ? `Skipped: ${escapeHtml(candidate.reason)}` : `Failed: ${escapeHtml(candidate.error)}`}</td></tr>`
   }
   const isBest = candidate.id === bestCandidateId
   return `<tr class="${isBest ? 'best' : ''}">
     <td><div class="name">${escapeHtml(candidate.label)}${isBest ? '<span class="badge">best</span>' : ''}</div><div class="path">${escapeHtml(candidate.output)}</div></td>
+    <td>${escapeHtml(getCodec(candidate))}</td>
     <td><div class="metric">${formatBytes(candidate.size)}</div>${makeBar(candidate.size, maxSize)}</td>
     <td><div class="metric">${formatRuntime(candidate.runtimeMs)}</div>${makeBar(candidate.runtimeMs, maxRuntime)}</td>
     <td><div class="metric">${formatBytes(candidate.peakRamBytes)}</div>${makeBar(candidate.peakRamBytes, maxPeakRam)}</td>
@@ -161,7 +166,7 @@ const renderFixture = (fixture: RunResult['fixtures'][number]) => {
       </div>
     </header>
     <table>
-      <thead><tr><th>Compressor</th><th>Size</th><th>Runtime</th><th>Peak RAM</th><th>Raw size</th></tr></thead>
+      <thead><tr><th>Compressor</th><th>Codec</th><th>Size</th><th>Runtime</th><th>Peak RAM</th><th>Raw size</th></tr></thead>
       <tbody>${getSortedCandidates(fixture.candidates).map(candidate => renderCandidateRow(candidate, fixture.bestCandidateId, maxSize, maxRuntime, maxPeakRam)).join('')}</tbody>
     </table>
   </section>`

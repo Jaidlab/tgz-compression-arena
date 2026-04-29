@@ -14,7 +14,7 @@ $env:FIXTURES = 'npm_package_large'; $env:CANDIDATES = 'gigapress'; bun run aren
 
 Useful Gigapress knobs:
 
-- `GIGAPRESS_ITERATIONS` – small-fixture optimization iterations, default `1000`.
-- `GIGAPRESS_THOROUGH` – whether to run expensive split-point search, `true`, `false` or `auto`; default `auto`, which enables it up to `262144` bytes.
-- `GIGAPRESS_LARGE_ITERATIONS` – large-fixture chunk optimization iterations, default `8`.
-- `GIGAPRESS_LARGE_BLOCK_SIZE` – large-fixture chunk size in bytes, default `4194304` (4.19 mb).
+- `GIGAPRESS_ITERATIONS` – small-fixture (≤ 256 kb) optimization iterations, default `1000`.
+- `GIGAPRESS_THOROUGH` – whether to use full-input thorough compression before chunking; accepts `true`, `false` or `auto`; default `true`. The arena candidate retries with `false` only when the thorough worker crashes with an OOM-style failure.
+- `GIGAPRESS_LARGE_ITERATIONS` – per-block optimization iterations for inputs > 256 kb, default `150`.
+- `GIGAPRESS_LARGE_BLOCK_SIZE` – chunk size for inputs > 16 mb, default `16777216` (16.78 mb).

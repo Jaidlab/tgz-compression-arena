@@ -1,5 +1,7 @@
 export type CandidateAvailability = CandidateAvailable | CandidateUnavailable
 
+export type CompressionCodec = 'deflate' | 'gzip' | 'zlib'
+
 export type CandidateAvailable = {
   available: true
 }
@@ -7,6 +9,7 @@ export type CandidateAvailable = {
 export type CandidateResult = CandidateResultError | CandidateResultOk | CandidateResultSkipped
 
 export type CandidateResultBase = {
+  codec: CompressionCodec
   id: string
   label: string
   status: 'error' | 'ok' | 'skipped'
