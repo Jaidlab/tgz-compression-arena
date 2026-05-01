@@ -116,7 +116,7 @@ const renderOverview = (result: RunResult) => {
     <header>
       <div>
         <h2>Overview</h2>
-        <p>${fixtureCount} fixture${fixtureCount === 1 ? '' : 's'} · source tar total ${formatBytes(inputSize)}</p>
+        <p>${fixtureCount} fixture${fixtureCount === 1 ? '' : 's'} · source input total ${formatBytes(inputSize)}</p>
       </div>
     </header>
     <table>
@@ -159,10 +159,10 @@ const renderFixture = (fixture: RunResult['fixtures'][number]) => {
     <header>
       <div>
         <h2>${escapeHtml(fixture.name)}</h2>
-        <p>${escapeHtml(fixture.input)} · source tar ${formatBytes(fixture.inputSize)}</p>
+        <p>${escapeHtml(fixture.input)} · source input ${formatBytes(fixture.inputSize)}</p>
       </div>
       <div class="summary">
-        ${best ? `<strong>${formatBytes(best.size)}</strong><span>${formatNumber(ratio!, 2)}% of tar</span>` : '<strong>No successful result</strong>'}
+        ${best ? `<strong>${formatBytes(best.size)}</strong><span>${formatNumber(ratio!, 2)}% of input</span>` : '<strong>No successful result</strong>'}
       </div>
     </header>
     <table>

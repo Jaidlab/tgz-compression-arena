@@ -5,7 +5,7 @@ bun run arena:run
 bun run arena:report
 ```
 
-`scripts/run.ts` picks up every `*.tar` in `assets/fixture`. Use filters when iterating on expensive candidates or large fixtures:
+`scripts/run.ts` picks up every file in `assets/fixture`. Use filters when iterating on expensive candidates or large fixtures:
 
 ```pwsh
 bun run arena:run -- --fixture npm_package_large --candidate gigapress

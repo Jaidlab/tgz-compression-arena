@@ -17,7 +17,7 @@ export abstract class ZenzopCandidate extends CompressionCandidate {
     if (!zenzopCommand) {
       throw new Error('zenzop was not found in PATH')
     }
-    const workInput = join(context.workFolder, `${this.id}.tar`)
+    const workInput = join(context.workFolder, `${this.id}.input`)
     const workOutput = `${workInput}.gz`
     const output = this.getOutputFile(context)
     await fs.copy(input, workInput)

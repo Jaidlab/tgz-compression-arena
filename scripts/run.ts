@@ -64,14 +64,24 @@ const run = async () => {
   await fs.remove(workRoot)
   await fs.ensureDir(artifactFolder)
   await fs.ensureDir(workRoot)
-  const fixtureFileNames = await fs.readdir(fixtureFolder)
-  const fixtureFiles = fixtureFileNames
-    .filter(file => file.endsWith('.tar'))
+  const fixtureNames: Array<string> = []
+  for (const file of await fs.readdir(fixtureFolder)) {
+    if (file.startsWith('.')) {
+      continue
+    }
+    const fixturePath = join(fixtureFolder, file)
+    const fixtureStat = await fs.stat(fixturePath)
+    if (!fixtureStat.isFile()) {
+      continue
+    }
+    fixtureNames.push(file)
+  }
+  const fixtureFiles = fixtureNames
     .filter(file => !fixtureFilter || fixtureFilter.has(parse(file).name) || fixtureFilter.has(file))
     .toSorted((a, b) => parse(a).name.localeCompare(parse(b).name))
     .map(file => join(fixtureFolder, file))
   if (fixtureFiles.length === 0) {
-    throw new Error(`Fixture filter matched nothing. Available fixtures: ${formatFilterValues(fixtureFileNames.filter(file => file.endsWith('.tar')).flatMap(file => [file, parse(file).name]))}`)
+    throw new Error(`Fixture filter matched nothing. Available fixtures: ${formatFilterValues(fixtureNames.flatMap(file => [file, parse(file).name]))}`)
   }
   const result: RunResult = {
     candidates: selectedCandidates.map(candidate => ({

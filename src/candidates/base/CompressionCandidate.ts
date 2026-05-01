@@ -13,7 +13,7 @@ export abstract class CompressionCandidate {
   protected abstract compress(input: string, context: CandidateRunInternalContext): Promise<string>
 
   protected getOutputFile(context: CandidateRunContext) {
-    return join(context.outputFolder, `${this.id}.tgz`)
+    return join(context.outputFolder, `${this.id}.gz`)
   }
 
   async isAvailable(): Promise<CandidateAvailability> {

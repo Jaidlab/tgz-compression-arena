@@ -6,7 +6,7 @@ import {CompressionCandidate} from './base/CompressionCandidate.ts'
 const gigapressWorker = String.raw`
 const [inputFile, outputFile, iterationsText, thoroughText, largeIterationsText, largeBlockSizeText] = Bun.argv.slice(1)
 if (!inputFile || !outputFile || !iterationsText || !thoroughText || !largeIterationsText || !largeBlockSizeText) {
-  throw new Error('Usage: bun --eval <worker> -- <input.tar> <output.tgz> <iterations> <thorough> <largeIterations> <largeBlockSize>')
+  throw new Error('Usage: bun --eval <worker> -- <input> <output> <iterations> <thorough> <largeIterations> <largeBlockSize>')
 }
 const parseThorough = value => {
   if (value === 'auto') {

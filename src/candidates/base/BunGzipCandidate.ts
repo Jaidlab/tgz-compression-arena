@@ -6,7 +6,7 @@ import {CompressionCandidate} from './CompressionCandidate.ts'
 const bunGzipWorker = String.raw`
 const [inputFile, outputFile, levelText] = Bun.argv.slice(1)
 if (!inputFile || !outputFile || !levelText) {
-  throw new Error('Usage: bun --eval <worker> -- <input.tar> <output.tgz> <level>')
+  throw new Error('Usage: bun --eval <worker> -- <input> <output> <level>')
 }
 const input = await Bun.file(inputFile).arrayBuffer()
 const output = Bun.gzipSync(input, {level: Number(levelText)})
